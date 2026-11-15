@@ -208,6 +208,7 @@ export default function App() {
 
         {tab === 'browse' && (<>
           <section className="hero">
+            <span className="pill"><SparkleIcon /> AI feedback on every answer</span>
             <h1>Ace your next <span>tech interview</span></h1>
             <p className="lead">
               Real questions with clear answers and honest AI feedback. Can't find your topic? Search for it and we'll look online.
