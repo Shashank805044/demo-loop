@@ -53,3 +53,9 @@ h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
 .feedback details { margin: 12px 0; }
 .scorelist { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
 .scorelist li { display: flex; justify-content: space-between; gap: 12px; padding-top: 8px; border-top: 1px dashed var(--line); }
+
+.search { display: flex; align-items: center; gap: 12px; margin: 12px 0 0; }
+.search input { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card); color: var(--fg); font: inherit; }
+.search input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.empty { color: var(--muted); }

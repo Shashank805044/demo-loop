@@ -69,11 +69,25 @@ app.MapGet("/api/levels", () => new[]
     new { id = 3, name = "Advanced", experience = "5+ years" },
 });
 
-IQueryable<Question> Filter(AppDb db, string? topic, int? level)
+IQueryable<Question> Filter(AppDb db, string? topic, int? level, string? search = null)
 {
     var q = db.Questions.AsNoTracking().Include(x => x.Topic).AsQueryable();
     if (!string.IsNullOrWhiteSpace(topic)) q = q.Where(x => x.Topic!.Slug == topic);
     if (level is >= 1 and <= 3) q = q.Where(x => x.Level == (Level)level);
+
+    // Free-text search: every word must appear in the question, answer or topic name.
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var terms = search.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t => t.Length > 60 ? t[..60] : t).Take(6);
+        foreach (var term in terms)
+        {
+            var pattern = "%" + term.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+            q = q.Where(x => EF.Functions.Like(x.Text, pattern, "\\")
+                          || EF.Functions.Like(x.Answer, pattern, "\\")
+                          || EF.Functions.Like(x.Topic!.Name, pattern, "\\"));
+        }
+    }
     return q;
 }
 
@@ -90,8 +104,8 @@ object Dto(Question x) => new
     updatedAt = x.UpdatedAt,
 };
 
-app.MapGet("/api/questions", async (AppDb db, string? topic, int? level) =>
-    (await Filter(db, topic, level).OrderBy(x => x.Id).ToListAsync()).Select(Dto));
+app.MapGet("/api/questions", async (AppDb db, string? topic, int? level, string? q) =>
+    (await Filter(db, topic, level, q).OrderBy(x => x.Id).ToListAsync()).Select(Dto));
 
 app.MapGet("/api/questions/random", async (AppDb db, string? topic, int? level, int count = 5) =>
 {

@@ -26,6 +26,14 @@ export default function App() {
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'browse' | 'mock'>('browse')
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+
+  // Wait for the user to stop typing before querying the API.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => clearTimeout(t)
+  }, [search])
 
   useEffect(() => {
     Promise.all([
@@ -40,11 +48,12 @@ export default function App() {
     const params = new URLSearchParams()
     if (topic) params.set('topic', topic)
     if (level) params.set('level', String(level))
+    if (debouncedSearch) params.set('q', debouncedSearch)
     fetch(`${API}/api/questions?${params}`)
       .then(r => r.json())
       .then(setQuestions)
       .catch(() => setError('Cannot reach the API. Is the backend running?'))
-  }, [topic, level])
+  }, [topic, level, debouncedSearch])
 
   const toggle = (id: number) =>
     setOpen(prev => {
@@ -67,7 +76,18 @@ export default function App() {
       {tab === 'mock' && <MockInterview api={API} topics={topics} levels={levels} />}
 
       {tab === 'browse' && (<>
-      <p className="sub">Pick a topic and your experience level.</p>
+      <p className="sub">Search anything, or pick a topic and your experience level.</p>
+
+      <div className="search">
+        <input
+          type="search"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search questions and answers (e.g. index, dependency injection, functions)…"
+          aria-label="Search questions"
+        />
+        {search && <button className="link" onClick={() => setSearch('')}>Clear</button>}
+      </div>
 
       <section className="filters">
         <div>
@@ -94,7 +114,15 @@ export default function App() {
         </div>
       </section>
 
-      <p className="count">{questions.length} questions</p>
+      <p className="count">
+        {questions.length} {questions.length === 1 ? 'question' : 'questions'}
+        {debouncedSearch && <> matching “{debouncedSearch}”</>}
+      </p>
+      {questions.length === 0 && (
+        <p className="empty">
+          No matches. Try different words, remove a filter, or clear the search.
+        </p>
+      )}
 
       <ul className="cards">
         {questions.map(q => (
