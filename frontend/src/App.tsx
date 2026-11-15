@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import { API, apiFetch } from './api'
+import { useAuth } from './useAuth'
+import AuthForm from './AuthForm'
 import MockInterview from './MockInterview'
+import ProgressView from './ProgressView'
+import QuestionCard from './QuestionCard'
+import SavedView from './SavedView'
+import type { LevelInfo, Question, Topic } from './types'
 
-const API = import.meta.env.VITE_API_URL ?? 'http://localhost:5137'
+type Tab = 'browse' | 'mock' | 'saved' | 'progress'
 
-type Topic = { id: number; name: string; slug: string }
-type LevelInfo = { id: number; name: string; experience: string }
 type SmartResult = {
   usedAI: boolean
   summary: string
@@ -13,18 +18,10 @@ type SmartResult = {
   fetched?: number
   questions: Question[]
 }
-type Question = {
-  id: number
-  topic: string
-  level: string
-  question: string
-  answer: string
-  sourceName?: string | null
-  sourceUrl?: string | null
-  updatedAt: string
-}
 
 export default function App() {
+  const { email, ready, signOut } = useAuth()
+
   const [topics, setTopics] = useState<Topic[]>([])
   const [levels, setLevels] = useState<LevelInfo[]>([])
   const [topic, setTopic] = useState('')
@@ -32,7 +29,10 @@ export default function App() {
   const [questions, setQuestions] = useState<Question[]>([])
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'browse' | 'mock'>('browse')
+  const [tab, setTab] = useState<Tab>('browse')
+  const [showAuth, setShowAuth] = useState(false)
+  const [authMessage, setAuthMessage] = useState<string | undefined>()
+
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   // Result of an AI-interpreted search (Enter / "Smart search"). null = normal browsing.
@@ -40,13 +40,22 @@ export default function App() {
   const [smartBusy, setSmartBusy] = useState(false)
   const [smartError, setSmartError] = useState('')
 
+  // Ids of the logged-in user's saved questions.
+  const [savedIds, setSavedIds] = useState<Set<number>>(new Set())
+  const bookmarked = (id: number) => !!email && savedIds.has(id)
+
+  function askLogin(message?: string) {
+    setAuthMessage(message)
+    setShowAuth(true)
+  }
+
   async function runSmart() {
     const q = search.trim()
     if (!q) return
     setSmartBusy(true)
     setSmartError('')
     try {
-      const res = await fetch(`${API}/api/search?${new URLSearchParams({ q })}`)
+      const res = await apiFetch(`/api/search?${new URLSearchParams({ q })}`)
       if (res.status === 429) { setSmartError('Too many searches. Wait a minute and try again.'); return }
       if (!res.ok) { setSmartError('Search failed. Try again.'); return }
       const data: SmartResult = await res.json()
@@ -92,6 +101,32 @@ export default function App() {
       .catch(() => setError('Cannot reach the API. Is the backend running?'))
   }, [topic, level, debouncedSearch])
 
+  // Load saved-question ids whenever someone logs in.
+  useEffect(() => {
+    if (!email) return
+    apiFetch('/api/me/bookmarks')
+      .then(r => (r.ok ? r.json() : []))
+      .then((qs: Question[]) => setSavedIds(new Set(qs.map(q => q.id))))
+      .catch(() => {})
+  }, [email])
+
+  async function toggleBookmark(id: number) {
+    if (!email) { askLogin('Log in to save questions and keep your progress.'); return }
+    const adding = !savedIds.has(id)
+    const set = (on: boolean) => setSavedIds(prev => {
+      const n = new Set(prev)
+      if (on) n.add(id); else n.delete(id)
+      return n
+    })
+    set(adding) // optimistic
+    try {
+      const res = await apiFetch(`/api/me/bookmarks/${id}`, { method: adding ? 'PUT' : 'DELETE' })
+      if (!res.ok) set(!adding)
+    } catch {
+      set(!adding)
+    }
+  }
+
   const toggle = (id: number) =>
     setOpen(prev => {
       const next = new Set(prev)
@@ -99,112 +134,125 @@ export default function App() {
       return next
     })
 
+  const goto = (t: Tab) => { setTab(t); setShowAuth(false) }
+
   return (
     <main>
-      <h1>Interview Question Hub</h1>
+      <header className="top">
+        <h1>Interview Question Hub</h1>
+        <div className="account">
+          {!ready ? null : email ? (
+            <>
+              <span className="muted" title={email}>{email}</span>
+              <button className="link" onClick={() => { signOut(); setTab(t => (t === 'saved' || t === 'progress') ? 'browse' : t) }}>
+                Log out
+              </button>
+            </>
+          ) : (
+            <button className="link" onClick={() => (showAuth ? setShowAuth(false) : askLogin())}>
+              Log in / Sign up
+            </button>
+          )}
+        </div>
+      </header>
+
+      {showAuth && !email && <AuthForm message={authMessage} onDone={() => setShowAuth(false)} />}
 
       <nav className="tabs">
-        <button className={tab === 'browse' ? 'on' : ''} onClick={() => setTab('browse')}>Browse questions</button>
-        <button className={tab === 'mock' ? 'on' : ''} onClick={() => setTab('mock')}>Mock interview</button>
+        <button className={tab === 'browse' ? 'on' : ''} onClick={() => goto('browse')}>Browse questions</button>
+        <button className={tab === 'mock' ? 'on' : ''} onClick={() => goto('mock')}>Mock interview</button>
+        <button className={tab === 'saved' ? 'on' : ''} onClick={() => goto('saved')}>Saved</button>
+        <button className={tab === 'progress' ? 'on' : ''} onClick={() => goto('progress')}>My progress</button>
       </nav>
 
       {error && <p className="error">{error}</p>}
 
-      {tab === 'mock' && <MockInterview api={API} topics={topics} levels={levels} />}
+      {tab === 'mock' && (
+        <MockInterview api={API} topics={topics} levels={levels} onNeedLogin={() => askLogin('Log in to save your scores and track your progress.')} />
+      )}
+
+      {(tab === 'saved' || tab === 'progress') && !email && ready && (
+        <AuthForm message={tab === 'saved'
+          ? 'Log in to save questions and find them here.'
+          : 'Log in to see your scores and progress over time.'} />
+      )}
+      {tab === 'saved' && email && (
+        <SavedView onRemoved={id => setSavedIds(prev => { const n = new Set(prev); n.delete(id); return n })} />
+      )}
+      {tab === 'progress' && email && <ProgressView />}
 
       {tab === 'browse' && (<>
-      <p className="sub">Search anything, or pick a topic and your experience level.</p>
+        <p className="sub">Search anything, or pick a topic and your experience level.</p>
 
-      <form className="search" onSubmit={e => { e.preventDefault(); runSmart() }}>
-        <input
-          type="search"
-          value={search}
-          onChange={e => { setSearch(e.target.value); leaveSmart() }}
-          placeholder="Search, or ask: “latest .net questions”, “senior azure”, “beginner sql joins”…"
-          aria-label="Search questions"
-        />
-        <button className="primary inline" type="submit" disabled={smartBusy || !search.trim()}>
-          {smartBusy ? 'Searching…' : '✨ Smart search'}
-        </button>
-        {search && (
-          <button type="button" className="link" onClick={() => { setSearch(''); leaveSmart() }}>Clear</button>
+        <form className="search" onSubmit={e => { e.preventDefault(); runSmart() }}>
+          <input
+            type="search"
+            value={search}
+            onChange={e => { setSearch(e.target.value); leaveSmart() }}
+            placeholder="Search, or ask: “latest .net questions”, “senior azure”, “beginner sql joins”…"
+            aria-label="Search questions"
+          />
+          <button className="primary inline" type="submit" disabled={smartBusy || !search.trim()}>
+            {smartBusy ? 'Searching…' : '✨ Smart search'}
+          </button>
+          {search && (
+            <button type="button" className="link" onClick={() => { setSearch(''); leaveSmart() }}>Clear</button>
+          )}
+        </form>
+        {smartBusy && (
+          <p className="muted">
+            Understanding your search. If we don't have enough questions yet, I'll look online and add some. This can take up to a minute.
+          </p>
         )}
-      </form>
-      {smartBusy && (
-        <p className="muted">
-          Understanding your search. If we don't have enough questions yet, I'll look online and add some. This can take up to a minute.
-        </p>
-      )}
-      {smartError && <p className="error">{smartError}</p>}
-      {smart && (
-        <p className="interp">
-          {smart.usedAI ? 'AI understood: ' : ''}<strong>{smart.summary}</strong>
-          {smart.note && <><br /><span className="muted">{smart.note}</span></>}
-        </p>
-      )}
+        {smartError && <p className="error">{smartError}</p>}
+        {smart && (
+          <p className="interp">
+            {smart.usedAI ? 'AI understood: ' : ''}<strong>{smart.summary}</strong>
+            {smart.note && <><br /><span className="muted">{smart.note}</span></>}
+          </p>
+        )}
 
-      <section className="filters">
-        <div>
-          <h2>Topic</h2>
-          <div className="chips">
-            <button className={topic === '' ? 'on' : ''} onClick={() => { setTopic(''); leaveSmart() }}>All</button>
-            {topics.map(t => (
-              <button key={t.id} className={topic === t.slug ? 'on' : ''}
-                onClick={() => { setTopic(t.slug); leaveSmart() }}>{t.name}</button>
-            ))}
-          </div>
-        </div>
-        <div>
-          <h2>Level</h2>
-          <div className="chips">
-            <button className={level === 0 ? 'on' : ''} onClick={() => { setLevel(0); leaveSmart() }}>All</button>
-            {levels.map(l => (
-              <button key={l.id} className={level === l.id ? 'on' : ''}
-                onClick={() => { setLevel(l.id); leaveSmart() }}>
-                {l.name} <small>{l.experience}</small>
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <p className="count">
-        {shown.length} {shown.length === 1 ? 'question' : 'questions'}
-        {!smart && debouncedSearch && <> matching “{debouncedSearch}”</>}
-      </p>
-      {shown.length === 0 && (
-        <p className="empty">
-          No matches. Try different words, remove a filter, or clear the search.
-        </p>
-      )}
-
-      <ul className="cards">
-        {shown.map(q => (
-          <li key={q.id} className="card">
-            <div className="meta">
-              <span className="tag">{q.topic}</span>
-              <span className={`tag lvl-${q.level.toLowerCase()}`}>{q.level}</span>
+        <section className="filters">
+          <div>
+            <h2>Topic</h2>
+            <div className="chips">
+              <button className={topic === '' ? 'on' : ''} onClick={() => { setTopic(''); leaveSmart() }}>All</button>
+              {topics.map(t => (
+                <button key={t.id} className={topic === t.slug ? 'on' : ''}
+                  onClick={() => { setTopic(t.slug); leaveSmart() }}>{t.name}</button>
+              ))}
             </div>
-            <h3>{q.question}</h3>
-            <button className="link" onClick={() => toggle(q.id)}>
-              {open.has(q.id) ? 'Hide answer' : 'Show answer'}
-            </button>
-            {open.has(q.id) && (
-              <div className="answer">
-                <p>{q.answer}</p>
-                {q.sourceName && (
-                  <small>
-                    Source:{' '}
-                    {q.sourceUrl
-                      ? <a href={q.sourceUrl} target="_blank" rel="noreferrer">{q.sourceName}</a>
-                      : q.sourceName}
-                  </small>
-                )}
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
+          </div>
+          <div>
+            <h2>Level</h2>
+            <div className="chips">
+              <button className={level === 0 ? 'on' : ''} onClick={() => { setLevel(0); leaveSmart() }}>All</button>
+              {levels.map(l => (
+                <button key={l.id} className={level === l.id ? 'on' : ''}
+                  onClick={() => { setLevel(l.id); leaveSmart() }}>
+                  {l.name} <small>{l.experience}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <p className="count">
+          {shown.length} {shown.length === 1 ? 'question' : 'questions'}
+          {!smart && debouncedSearch && <> matching “{debouncedSearch}”</>}
+        </p>
+        {shown.length === 0 && (
+          <p className="empty">
+            No matches. Try different words, remove a filter, or clear the search.
+          </p>
+        )}
+
+        <ul className="cards">
+          {shown.map(q => (
+            <QuestionCard key={q.id} q={q} open={open.has(q.id)} onToggle={() => toggle(q.id)}
+              bookmarked={bookmarked(q.id)} onBookmark={() => toggleBookmark(q.id)} />
+          ))}
+        </ul>
       </>)}
     </main>
   )

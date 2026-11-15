@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import { apiFetch } from './api'
+import { useAuth } from './useAuth'
+import type { LevelInfo, Topic } from './types'
 
-type Topic = { id: number; name: string; slug: string }
-type LevelInfo = { id: number; name: string; experience: string }
 type MockQuestion = { id: number; topic: string; level: string; question: string }
 type Result = {
+  saved: boolean
   score: number
   verdict: string
   strengths: string[]
@@ -14,11 +16,15 @@ type Result = {
 
 const MAX_CHARS = 3000
 
-export default function MockInterview({ api, topics, levels }: {
+export default function MockInterview({ api, topics, levels, onNeedLogin }: {
   api: string
   topics: Topic[]
   levels: LevelInfo[]
+  onNeedLogin: () => void
 }) {
+  const { email } = useAuth()
+  // Groups the answers of one interview together in the user's history.
+  const [sessionId, setSessionId] = useState(() => crypto.randomUUID())
   const [topic, setTopic] = useState('')
   const [level, setLevel] = useState(0)
   const [count, setCount] = useState(5)
@@ -47,6 +53,7 @@ export default function MockInterview({ api, topics, levels }: {
       const qs: MockQuestion[] = await res.json()
       if (qs.length === 0) { setError('No questions match that topic and level yet.'); return }
       setQuestions(qs); setIndex(0); setScores([]); setAnswer(''); setResult(null)
+      setSessionId(crypto.randomUUID())
       setStarted(true)
     } catch {
       setError('Cannot reach the API. Is the backend running?')
@@ -60,10 +67,10 @@ export default function MockInterview({ api, topics, levels }: {
     setError('')
     setBusy(true)
     try {
-      const res = await fetch(`${api}/api/mock/score`, {
+      const res = await apiFetch('/api/mock/score', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questionId: current.id, answer }),
+        body: JSON.stringify({ questionId: current.id, answer, sessionId }),
       })
       const body = await res.json().catch(() => ({}))
       if (res.status === 429) { setError('Too many requests. Wait a minute and try again.'); return }
@@ -197,6 +204,14 @@ export default function MockInterview({ api, topics, levels }: {
               <><h4>What was missing</h4><ul>{result.gaps.map((s, i) => <li key={i}>{s}</li>)}</ul></>
             )}
             {result.tip && <p><strong>Tip:</strong> {result.tip}</p>}
+            {result.saved
+              ? <p className="muted">✓ Saved to your progress</p>
+              : !email && (
+                <p className="muted">
+                  This score isn't being saved.{' '}
+                  <button className="link" onClick={onNeedLogin}>Log in to keep your progress</button>
+                </p>
+              )}
             <details>
               <summary>Reference answer</summary>
               <p>{result.referenceAnswer}</p>

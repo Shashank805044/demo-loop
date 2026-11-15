@@ -3,7 +3,12 @@ using System.Threading.RateLimiting;
 using InterviewHub.Api.Collector;
 using InterviewHub.Api.Mock;
 using InterviewHub.Api.Search;
+using InterviewHub.Api.Users;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +21,26 @@ builder.Services.AddDbContext<AppDb>(o =>
     if (provider == "SqlServer") o.UseSqlServer(conn);
     else o.UseSqlite(conn);
 });
+
+// Accounts and progress live in their own database so the question library is never touched.
+var usersConn = builder.Configuration.GetConnectionString("Users")
+    ?? (provider == "SqlServer" ? conn : "Data Source=users.db");
+builder.Services.AddDbContext<UserDb>(o =>
+{
+    if (provider == "SqlServer") o.UseSqlServer(usersConn);
+    else o.UseSqlite(usersConn);
+});
+builder.Services.AddIdentityApiEndpoints<IdentityUser>(o =>
+{
+    o.User.RequireUniqueEmail = true;
+    o.Password.RequiredLength = 8; // length matters more than composition rules
+    o.Password.RequireDigit = false;
+    o.Password.RequireLowercase = false;
+    o.Password.RequireUppercase = false;
+    o.Password.RequireNonAlphanumeric = false;
+    // Lockout (5 failed logins -> 5 minutes) is on by default.
+}).AddEntityFrameworkStores<UserDb>();
+builder.Services.AddAuthorization();
 
 builder.Services.Configure<CollectorOptions>(builder.Configuration.GetSection(CollectorOptions.Section));
 builder.Services.AddHttpClient<StackExchangeClient>(c =>
@@ -40,9 +65,15 @@ builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     var perMinute = builder.Configuration.GetValue("Mock:RequestsPerMinute", 20);
+    // Logged-in users get their own bucket; everyone else is limited by IP.
     o.AddPolicy("mock", ctx => RateLimitPartition.GetFixedWindowLimiter(
-        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        ctx.User.FindFirstValue(ClaimTypes.NameIdentifier) is { } uid
+            ? "u:" + uid : "ip:" + (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
         _ => new FixedWindowRateLimiterOptions { PermitLimit = perMinute, Window = TimeSpan.FromMinutes(1) }));
+    // Sign-up / sign-in: slow down password guessing and account spam.
+    o.AddPolicy("auth", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        "ip:" + (ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1) }));
 });
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
@@ -57,10 +88,25 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
     db.Database.EnsureCreated(); // swap for EF migrations before production
     SeedData.Apply(db);
+
+    var udb = scope.ServiceProvider.GetRequiredService<UserDb>();
+    // On SQL Server the user tables share an existing database, where EnsureCreated does nothing:
+    // create just the missing tables instead. (Use EF migrations before production.)
+    if (!udb.Database.EnsureCreated())
+    {
+        try { ((RelationalDatabaseCreator)udb.Database.GetService<IDatabaseCreator>()).CreateTables(); }
+        catch (Exception) { /* tables already exist */ }
+    }
 }
 
 app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseRateLimiter();
+
+// Register / login / refresh / manage: built-in endpoints under /api/auth. Bearer tokens, no cookies.
+app.MapGroup("/api/auth").MapIdentityApi<IdentityUser>().RequireRateLimiting("auth");
+app.MapUserEndpoints();
 
 app.MapGet("/api/topics", async (AppDb db) =>
     await db.Topics.OrderBy(t => t.Name)
@@ -95,18 +141,7 @@ IQueryable<Question> Filter(AppDb db, string? topic, int? level, string? search 
     return q;
 }
 
-object Dto(Question x) => new
-{
-    x.Id,
-    topic = x.Topic!.Name,
-    topicSlug = x.Topic.Slug,
-    level = x.Level.ToString(),
-    question = x.Text,
-    answer = x.Answer,
-    sourceName = x.SourceName,
-    sourceUrl = x.SourceUrl,
-    updatedAt = x.UpdatedAt,
-};
+object Dto(Question x) => Dtos.Question(x);
 
 app.MapGet("/api/questions", async (AppDb db, string? topic, int? level, string? q) =>
     (await Filter(db, topic, level, q).OrderBy(x => x.Id).ToListAsync()).Select(Dto));
@@ -272,15 +307,16 @@ app.MapGet("/api/mock/start", async (AppDb db, string? topic, int? level, int co
     });
 });
 
-app.MapPost("/api/mock/score", async (ScoreRequest req, AppDb db, ClaudeScorer scorer,
-    IOptions<MockOptions> opts, CancellationToken ct) =>
+app.MapPost("/api/mock/score", async (ScoreRequest req, ClaimsPrincipal user, AppDb db, UserDb udb,
+    ClaudeScorer scorer, IOptions<MockOptions> opts, CancellationToken ct) =>
 {
     var answer = (req.Answer ?? "").Trim();
     if (answer.Length == 0) return Results.BadRequest(new { error = "Answer is empty." });
     if (answer.Length > opts.Value.MaxAnswerChars)
         return Results.BadRequest(new { error = $"Answer too long (max {opts.Value.MaxAnswerChars} characters)." });
 
-    var q = await db.Questions.AsNoTracking().FirstOrDefaultAsync(x => x.Id == req.QuestionId, ct);
+    var q = await db.Questions.AsNoTracking().Include(x => x.Topic)
+        .FirstOrDefaultAsync(x => x.Id == req.QuestionId, ct);
     if (q is null) return Results.NotFound(new { error = "Unknown question." });
 
     if (!scorer.IsConfigured)
@@ -295,8 +331,36 @@ app.MapPost("/api/mock/score", async (ScoreRequest req, AppDb db, ClaudeScorer s
     }
     if (score is null) return Results.Json(new { error = "Could not score this answer. Try again." }, statusCode: 502);
 
+    // Logged-in users: keep the attempt. A save failure must not lose the score the user just paid for.
+    var saved = false;
+    if (user.FindFirstValue(ClaimTypes.NameIdentifier) is { } uid)
+    {
+        try
+        {
+            udb.Attempts.Add(new Attempt
+            {
+                UserId = uid,
+                SessionId = req.SessionId ?? Guid.NewGuid(),
+                QuestionId = q.Id,
+                TopicName = q.Topic!.Name,
+                Level = (int)q.Level,
+                QuestionText = q.Text.Length > 1000 ? q.Text[..1000] : q.Text,
+                Answer = answer,
+                Score = score.Score10,
+                Verdict = score.Verdict.Length > 500 ? score.Verdict[..500] : score.Verdict,
+            });
+            await udb.SaveChangesAsync(ct);
+            saved = true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            app.Logger.LogError(ex, "Could not save attempt");
+        }
+    }
+
     return Results.Ok(new
     {
+        saved,
         score = score.Score10, score.Verdict, score.Strengths, score.Gaps, score.Tip,
         referenceAnswer = q.Answer, // revealed only after the candidate has answered
     });
@@ -317,4 +381,4 @@ app.MapPost("/api/admin/collect", async (HttpContext ctx, CollectionRunner runne
 
 app.Run();
 
-record ScoreRequest(int QuestionId, string? Answer);
+record ScoreRequest(int QuestionId, string? Answer, Guid? SessionId);

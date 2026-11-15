@@ -64,3 +64,26 @@ h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
 .interp { margin: 10px 0 0; padding: 10px 12px; border-left: 3px solid var(--accent);
   background: var(--card); border-radius: 6px; }
 @media (max-width: 560px) { .search { flex-wrap: wrap; } .search input { flex-basis: 100%; } }
+
+.top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.account { display: flex; align-items: center; gap: 12px; font-size: .9rem; max-width: 100%; }
+.account .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.authform { display: grid; gap: 12px; margin: 12px 0; max-width: 420px; }
+.authform h2 { margin: 0; font-size: 1.1rem; text-transform: none; letter-spacing: 0; color: var(--fg); }
+.authform label { display: grid; gap: 4px; font-size: .9rem; }
+.authform input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--fg); font: inherit; }
+.authform .row { gap: 12px; flex-wrap: wrap; }
+.authform .primary { margin-top: 0; }
+.star { margin-left: auto; background: none; border: 0; cursor: pointer; font-size: 1.3rem;
+  line-height: 1; color: var(--accent); padding: 0 4px; }
+.stats { display: flex; gap: 12px; flex-wrap: wrap; }
+.stat { display: grid; gap: 2px; min-width: 150px; }
+.bars { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.bars li { display: grid; grid-template-columns: minmax(90px, 160px) 1fr 40px; align-items: center; gap: 10px; }
+.bar-track { height: 10px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.bar-value { text-align: right; }
+.danger { background: none; border: 1px solid var(--err); color: var(--err); border-radius: 8px;
+  padding: 8px 14px; font: inherit; cursor: pointer; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 28px 0 16px; }
