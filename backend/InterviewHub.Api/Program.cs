@@ -2,6 +2,7 @@ using InterviewHub.Api;
 using System.Threading.RateLimiting;
 using InterviewHub.Api.Collector;
 using InterviewHub.Api.Mock;
+using InterviewHub.Api.Search;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -31,6 +32,7 @@ builder.Services.AddHostedService<CollectorHostedService>();
 
 builder.Services.Configure<MockOptions>(builder.Configuration.GetSection(MockOptions.Section));
 builder.Services.AddSingleton<ClaudeScorer>();
+builder.Services.AddSingleton<ClaudeSearchPlanner>();
 // Scoring spends Claude credits on a public endpoint: limit requests per client IP.
 builder.Services.AddRateLimiter(o =>
 {
@@ -113,6 +115,72 @@ app.MapGet("/api/questions/random", async (AppDb db, string? topic, int? level, 
     var all = await Filter(db, topic, level).ToListAsync();
     return all.OrderBy(_ => Random.Shared.Next()).Take(count).Select(Dto);
 });
+
+// ---- Smart (AI-assisted) search ----
+// "latest .net questions" -> { topic: dotnet, newest: true }. Results always come from stored
+// questions; the model only produces filters, which are validated before use.
+app.MapGet("/api/search", async (string? q, AppDb db, ClaudeSearchPlanner planner, CancellationToken ct) =>
+{
+    q = (q ?? "").Trim();
+    if (q.Length == 0) return Results.BadRequest(new { error = "Enter something to search for." });
+    if (q.Length > 200) q = q[..200];
+
+    var topics = (await db.Topics.AsNoTracking().ToListAsync(ct)).Select(t => (t.Slug, t.Name)).ToList();
+
+    SearchPlan? plan = null;
+    try { plan = await planner.PlanAsync(q, topics, ct); }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        app.Logger.LogWarning("Search planning failed, using keyword search: {Msg}", ex.Message);
+    }
+
+    // No AI available (or it failed): plain keyword search.
+    if (plan is null)
+    {
+        var plain = await Filter(db, null, null, q).OrderBy(x => x.Id).ToListAsync(ct);
+        return Results.Ok(new { usedAI = false, summary = $"Keyword search for “{q}”", questions = plain.Select(Dto) });
+    }
+
+    var keywords = string.Join(' ', plan.Keywords);
+    IQueryable<Question> Build(string? kw) => Filter(db, plan.TopicSlug, plan.Level, kw);
+    IOrderedQueryable<Question> Order(IQueryable<Question> s) => plan.Newest
+        ? s.OrderByDescending(x => x.UpdatedAt).ThenByDescending(x => x.Id)
+        : s.OrderBy(x => x.Id);
+
+    var results = await Order(Build(keywords)).ToListAsync(ct);
+    var relaxed = false;
+    // Keywords too strict: fall back to topic/level only so the user still sees something.
+    // Only when a topic or level still narrows the list; otherwise "no match" is the honest answer
+    // (e.g. "docker" must not return every .NET question).
+    if (results.Count == 0 && keywords.Length > 0 && (plan.TopicSlug is not null || plan.Level is not null))
+    {
+        results = await Order(Build(null)).ToListAsync(ct);
+        relaxed = results.Count > 0;
+    }
+
+    var topicName = topics.FirstOrDefault(t => t.Slug == plan.TopicSlug).Name;
+    var parts = new List<string>();
+    if (plan.Newest) parts.Add("newest first");
+    if (topicName is not null) parts.Add(topicName);
+    if (plan.Level is { } lv) parts.Add(((Level)lv).ToString());
+    if (plan.Keywords.Length > 0 && !relaxed) parts.Add("about " + string.Join(", ", plan.Keywords));
+
+    string? note = null;
+    if (relaxed)
+        note = $"No questions mention “{string.Join(", ", plan.Keywords)}” yet, so showing everything that matches the rest of your search.";
+    else if (results.Count == 0)
+        note = "No matching questions yet. Questions on this topic may not have been collected.";
+
+    return Results.Ok(new
+    {
+        usedAI = true,
+        note,
+        summary = parts.Count > 0 ? string.Join(" · ", parts) : "All topics",
+        interpretation = new { topic = plan.TopicSlug, level = plan.Level, keywords = plan.Keywords, newest = plan.Newest },
+        relaxed,
+        questions = results.Select(Dto),
+    });
+}).RequireRateLimiting("mock");
 
 // ---- Mock interview ----
 // Questions WITHOUT reference answers, so the client can't peek before answering.

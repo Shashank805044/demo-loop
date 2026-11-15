@@ -6,6 +6,12 @@ const API = import.meta.env.VITE_API_URL ?? 'http://localhost:5137'
 
 type Topic = { id: number; name: string; slug: string }
 type LevelInfo = { id: number; name: string; experience: string }
+type SmartResult = {
+  usedAI: boolean
+  summary: string
+  note?: string | null
+  questions: Question[]
+}
 type Question = {
   id: number
   topic: string
@@ -28,6 +34,31 @@ export default function App() {
   const [tab, setTab] = useState<'browse' | 'mock'>('browse')
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
+  // Result of an AI-interpreted search (Enter / "Smart search"). null = normal browsing.
+  const [smart, setSmart] = useState<SmartResult | null>(null)
+  const [smartBusy, setSmartBusy] = useState(false)
+  const [smartError, setSmartError] = useState('')
+
+  async function runSmart() {
+    const q = search.trim()
+    if (!q) return
+    setSmartBusy(true)
+    setSmartError('')
+    try {
+      const res = await fetch(`${API}/api/search?${new URLSearchParams({ q })}`)
+      if (res.status === 429) { setSmartError('Too many searches. Wait a minute and try again.'); return }
+      if (!res.ok) { setSmartError('Search failed. Try again.'); return }
+      setSmart(await res.json())
+      setOpen(new Set())
+    } catch {
+      setSmartError('Cannot reach the API. Is the backend running?')
+    } finally {
+      setSmartBusy(false)
+    }
+  }
+
+  const leaveSmart = () => { setSmart(null); setSmartError('') }
+  const shown = smart ? smart.questions : questions
 
   // Wait for the user to stop typing before querying the API.
   useEffect(() => {
@@ -78,35 +109,47 @@ export default function App() {
       {tab === 'browse' && (<>
       <p className="sub">Search anything, or pick a topic and your experience level.</p>
 
-      <div className="search">
+      <form className="search" onSubmit={e => { e.preventDefault(); runSmart() }}>
         <input
           type="search"
           value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search questions and answers (e.g. index, dependency injection, functions)…"
+          onChange={e => { setSearch(e.target.value); leaveSmart() }}
+          placeholder="Search, or ask: “latest .net questions”, “senior azure”, “beginner sql joins”…"
           aria-label="Search questions"
         />
-        {search && <button className="link" onClick={() => setSearch('')}>Clear</button>}
-      </div>
+        <button className="primary inline" type="submit" disabled={smartBusy || !search.trim()}>
+          {smartBusy ? 'Thinking…' : '✨ Smart search'}
+        </button>
+        {search && (
+          <button type="button" className="link" onClick={() => { setSearch(''); leaveSmart() }}>Clear</button>
+        )}
+      </form>
+      {smartError && <p className="error">{smartError}</p>}
+      {smart && (
+        <p className="interp">
+          {smart.usedAI ? 'AI understood: ' : ''}<strong>{smart.summary}</strong>
+          {smart.note && <><br /><span className="muted">{smart.note}</span></>}
+        </p>
+      )}
 
       <section className="filters">
         <div>
           <h2>Topic</h2>
           <div className="chips">
-            <button className={topic === '' ? 'on' : ''} onClick={() => setTopic('')}>All</button>
+            <button className={topic === '' ? 'on' : ''} onClick={() => { setTopic(''); leaveSmart() }}>All</button>
             {topics.map(t => (
               <button key={t.id} className={topic === t.slug ? 'on' : ''}
-                onClick={() => setTopic(t.slug)}>{t.name}</button>
+                onClick={() => { setTopic(t.slug); leaveSmart() }}>{t.name}</button>
             ))}
           </div>
         </div>
         <div>
           <h2>Level</h2>
           <div className="chips">
-            <button className={level === 0 ? 'on' : ''} onClick={() => setLevel(0)}>All</button>
+            <button className={level === 0 ? 'on' : ''} onClick={() => { setLevel(0); leaveSmart() }}>All</button>
             {levels.map(l => (
               <button key={l.id} className={level === l.id ? 'on' : ''}
-                onClick={() => setLevel(l.id)}>
+                onClick={() => { setLevel(l.id); leaveSmart() }}>
                 {l.name} <small>{l.experience}</small>
               </button>
             ))}
@@ -115,17 +158,17 @@ export default function App() {
       </section>
 
       <p className="count">
-        {questions.length} {questions.length === 1 ? 'question' : 'questions'}
-        {debouncedSearch && <> matching “{debouncedSearch}”</>}
+        {shown.length} {shown.length === 1 ? 'question' : 'questions'}
+        {!smart && debouncedSearch && <> matching “{debouncedSearch}”</>}
       </p>
-      {questions.length === 0 && (
+      {shown.length === 0 && (
         <p className="empty">
           No matches. Try different words, remove a filter, or clear the search.
         </p>
       )}
 
       <ul className="cards">
-        {questions.map(q => (
+        {shown.map(q => (
           <li key={q.id} className="card">
             <div className="meta">
               <span className="tag">{q.topic}</span>

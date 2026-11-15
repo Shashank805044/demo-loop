@@ -59,3 +59,8 @@ h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
   background: var(--card); color: var(--fg); font: inherit; }
 .search input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .empty { color: var(--muted); }
+
+.primary.inline { margin-top: 0; white-space: nowrap; }
+.interp { margin: 10px 0 0; padding: 10px 12px; border-left: 3px solid var(--accent);
+  background: var(--card); border-radius: 6px; }
+@media (max-width: 560px) { .search { flex-wrap: wrap; } .search input { flex-basis: 100%; } }
