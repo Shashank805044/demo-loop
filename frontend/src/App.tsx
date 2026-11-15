@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 import { API, apiFetch } from './api'
-import { useAuth } from './useAuth'
-import AuthForm from './AuthForm'
+import AuthDialog from './AuthDialog'
+import { AlertIcon, BookmarkIcon, Logo, SearchIcon, SparkleIcon } from './Icons'
 import MockInterview from './MockInterview'
 import ProgressView from './ProgressView'
 import QuestionCard from './QuestionCard'
 import SavedView from './SavedView'
+import ThemeToggle from './ThemeToggle'
+import { useAuth } from './useAuth'
 import type { LevelInfo, Question, Topic } from './types'
 
 type Tab = 'browse' | 'mock' | 'saved' | 'progress'
@@ -19,6 +21,15 @@ type SmartResult = {
   questions: Question[]
 }
 
+const EXAMPLES = ['latest .net questions', 'senior azure', 'beginner sql joins', 'docker basics']
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'browse', label: 'Browse' },
+  { id: 'mock', label: 'Mock interview' },
+  { id: 'saved', label: 'Saved' },
+  { id: 'progress', label: 'Progress' },
+]
+
 export default function App() {
   const { email, ready, signOut } = useAuth()
 
@@ -27,6 +38,7 @@ export default function App() {
   const [topic, setTopic] = useState('')
   const [level, setLevel] = useState(0)
   const [questions, setQuestions] = useState<Question[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
   const [tab, setTab] = useState<Tab>('browse')
@@ -49,9 +61,10 @@ export default function App() {
     setShowAuth(true)
   }
 
-  async function runSmart() {
-    const q = search.trim()
+  async function runSmart(text?: string) {
+    const q = (text ?? search).trim()
     if (!q) return
+    if (text !== undefined) setSearch(text)
     setSmartBusy(true)
     setSmartError('')
     try {
@@ -97,7 +110,7 @@ export default function App() {
     if (debouncedSearch) params.set('q', debouncedSearch)
     fetch(`${API}/api/questions?${params}`)
       .then(r => r.json())
-      .then(setQuestions)
+      .then(qs => { setQuestions(qs); setLoaded(true) })
       .catch(() => setError('Cannot reach the API. Is the backend running?'))
   }, [topic, level, debouncedSearch])
 
@@ -134,126 +147,172 @@ export default function App() {
       return next
     })
 
-  const goto = (t: Tab) => { setTab(t); setShowAuth(false) }
+  const loginPrompt = (tab: 'saved' | 'progress') => (
+    <div className="empty-state">
+      <div className="icon">{tab === 'saved' ? <BookmarkIcon /> : <SparkleIcon />}</div>
+      <h3>{tab === 'saved' ? 'Keep the questions you want to revisit' : 'See how you are improving'}</h3>
+      <p>{tab === 'saved'
+        ? 'Log in to save questions and find them here on any device.'
+        : 'Log in to track your scores, spot weak topics and review past interviews.'}</p>
+      <button className="btn btn-primary" onClick={() => askLogin()}>Log in or sign up</button>
+    </div>
+  )
 
   return (
-    <main>
-      <header className="top">
-        <h1>Interview Question Hub</h1>
-        <div className="account">
-          {!ready ? null : email ? (
-            <>
-              <span className="muted" title={email}>{email}</span>
-              <button className="link" onClick={() => { signOut(); setTab(t => (t === 'saved' || t === 'progress') ? 'browse' : t) }}>
-                Log out
-              </button>
-            </>
-          ) : (
-            <button className="link" onClick={() => (showAuth ? setShowAuth(false) : askLogin())}>
-              Log in / Sign up
-            </button>
-          )}
+    <>
+      <header className="site-header">
+        <div className="wrap header-inner">
+          <a className="logo" href="/" onClick={e => { e.preventDefault(); setTab('browse') }}>
+            <Logo /> Interview Hub
+          </a>
+          <nav className="tabs" aria-label="Main">
+            {TABS.map(t => (
+              <button key={t.id} className="tab" aria-current={tab === t.id ? 'page' : undefined}
+                onClick={() => setTab(t.id)}>{t.label}</button>
+            ))}
+          </nav>
+          <div className="header-actions">
+            <ThemeToggle />
+            {!ready ? null : email ? (
+              <div className="account">
+                <span className="avatar" title={`Logged in as ${email}`} role="img"
+                  aria-label={`Logged in as ${email}`}>{email[0].toUpperCase()}</span>
+                <button className="btn btn-ghost btn-sm"
+                  onClick={() => { signOut(); setTab(t => (t === 'saved' || t === 'progress') ? 'browse' : t) }}>
+                  Log out
+                </button>
+              </div>
+            ) : (
+              <button className="btn btn-primary btn-sm" onClick={() => askLogin()}>Log in</button>
+            )}
+          </div>
         </div>
       </header>
 
-      {showAuth && !email && <AuthForm message={authMessage} onDone={() => setShowAuth(false)} />}
+      <main className="wrap">
+        {error && <p className="error" role="alert">{error}</p>}
 
-      <nav className="tabs">
-        <button className={tab === 'browse' ? 'on' : ''} onClick={() => goto('browse')}>Browse questions</button>
-        <button className={tab === 'mock' ? 'on' : ''} onClick={() => goto('mock')}>Mock interview</button>
-        <button className={tab === 'saved' ? 'on' : ''} onClick={() => goto('saved')}>Saved</button>
-        <button className={tab === 'progress' ? 'on' : ''} onClick={() => goto('progress')}>My progress</button>
-      </nav>
+        {tab === 'mock' && (
+          <MockInterview api={API} topics={topics} levels={levels}
+            onNeedLogin={() => askLogin('Log in to save your scores and track your progress.')} />
+        )}
 
-      {error && <p className="error">{error}</p>}
+        {tab === 'saved' && (email
+          ? <SavedView onBrowse={() => setTab('browse')}
+              onRemoved={id => setSavedIds(prev => { const n = new Set(prev); n.delete(id); return n })} />
+          : ready && loginPrompt('saved'))}
 
-      {tab === 'mock' && (
-        <MockInterview api={API} topics={topics} levels={levels} onNeedLogin={() => askLogin('Log in to save your scores and track your progress.')} />
-      )}
+        {tab === 'progress' && (email
+          ? <ProgressView onPractice={() => setTab('mock')} />
+          : ready && loginPrompt('progress'))}
 
-      {(tab === 'saved' || tab === 'progress') && !email && ready && (
-        <AuthForm message={tab === 'saved'
-          ? 'Log in to save questions and find them here.'
-          : 'Log in to see your scores and progress over time.'} />
-      )}
-      {tab === 'saved' && email && (
-        <SavedView onRemoved={id => setSavedIds(prev => { const n = new Set(prev); n.delete(id); return n })} />
-      )}
-      {tab === 'progress' && email && <ProgressView />}
+        {tab === 'browse' && (<>
+          <section className="hero">
+            <h1>Ace your next <span>tech interview</span></h1>
+            <p className="lead">
+              Real questions with clear answers and honest AI feedback. Can't find your topic? Search for it and we'll look online.
+            </p>
 
-      {tab === 'browse' && (<>
-        <p className="sub">Search anything, or pick a topic and your experience level.</p>
+            <form className="searchbox" onSubmit={e => { e.preventDefault(); runSmart() }} role="search">
+              <SearchIcon />
+              <input
+                type="search"
+                value={search}
+                onChange={e => { setSearch(e.target.value); leaveSmart() }}
+                placeholder="Search or ask anything…"
+                aria-label="Search questions"
+              />
+              {search && (
+                <button type="button" className="link clear" onClick={() => { setSearch(''); leaveSmart() }}>Clear</button>
+              )}
+              <button className="btn btn-primary" type="submit" disabled={smartBusy || !search.trim()}>
+                {smartBusy ? <><span className="spinner" /> Searching…</> : <><SparkleIcon width={18} height={18} /> Smart search</>}
+              </button>
+            </form>
 
-        <form className="search" onSubmit={e => { e.preventDefault(); runSmart() }}>
-          <input
-            type="search"
-            value={search}
-            onChange={e => { setSearch(e.target.value); leaveSmart() }}
-            placeholder="Search, or ask: “latest .net questions”, “senior azure”, “beginner sql joins”…"
-            aria-label="Search questions"
-          />
-          <button className="primary inline" type="submit" disabled={smartBusy || !search.trim()}>
-            {smartBusy ? 'Searching…' : '✨ Smart search'}
-          </button>
-          {search && (
-            <button type="button" className="link" onClick={() => { setSearch(''); leaveSmart() }}>Clear</button>
+            <div className="examples">
+              <span className="label">Try:</span>
+              {EXAMPLES.map(ex => (
+                <button key={ex} className="chip-sm" disabled={smartBusy} onClick={() => runSmart(ex)}>{ex}</button>
+              ))}
+            </div>
+          </section>
+
+          {smartBusy && (
+            <p className="busy-note" role="status">
+              <span className="spinner" />
+              Understanding your search. If we don't have enough questions yet, I'll look online and add some. This can take up to a minute.
+            </p>
           )}
-        </form>
-        {smartBusy && (
-          <p className="muted">
-            Understanding your search. If we don't have enough questions yet, I'll look online and add some. This can take up to a minute.
-          </p>
-        )}
-        {smartError && <p className="error">{smartError}</p>}
-        {smart && (
-          <p className="interp">
-            {smart.usedAI ? 'AI understood: ' : ''}<strong>{smart.summary}</strong>
-            {smart.note && <><br /><span className="muted">{smart.note}</span></>}
-          </p>
-        )}
-
-        <section className="filters">
-          <div>
-            <h2>Topic</h2>
-            <div className="chips">
-              <button className={topic === '' ? 'on' : ''} onClick={() => { setTopic(''); leaveSmart() }}>All</button>
-              {topics.map(t => (
-                <button key={t.id} className={topic === t.slug ? 'on' : ''}
-                  onClick={() => { setTopic(t.slug); leaveSmart() }}>{t.name}</button>
-              ))}
+          {smartError && <p className="error" role="alert">{smartError}</p>}
+          {smart && (
+            <div className="callout" role="status">
+              <SparkleIcon />
+              <div>
+                {smart.usedAI ? 'AI understood: ' : ''}<strong>{smart.summary}</strong>
+                {smart.note && <span className="note">{smart.note}</span>}
+              </div>
             </div>
-          </div>
-          <div>
-            <h2>Level</h2>
-            <div className="chips">
-              <button className={level === 0 ? 'on' : ''} onClick={() => { setLevel(0); leaveSmart() }}>All</button>
-              {levels.map(l => (
-                <button key={l.id} className={level === l.id ? 'on' : ''}
-                  onClick={() => { setLevel(l.id); leaveSmart() }}>
-                  {l.name} <small>{l.experience}</small>
-                </button>
-              ))}
+          )}
+
+          <section className="filters" aria-label="Filters">
+            <div className="filter-row">
+              <span className="filter-label">Topic</span>
+              <div className="chips">
+                <button className="chip" aria-pressed={topic === ''} onClick={() => { setTopic(''); leaveSmart() }}>All</button>
+                {topics.map(t => (
+                  <button key={t.id} className="chip" aria-pressed={topic === t.slug}
+                    onClick={() => { setTopic(t.slug); leaveSmart() }}>{t.name}</button>
+                ))}
+              </div>
             </div>
+            <div className="filter-row">
+              <span className="filter-label">Level</span>
+              <div className="chips">
+                <button className="chip" aria-pressed={level === 0} onClick={() => { setLevel(0); leaveSmart() }}>All</button>
+                {levels.map(l => (
+                  <button key={l.id} className="chip" aria-pressed={level === l.id}
+                    onClick={() => { setLevel(l.id); leaveSmart() }}>
+                    {l.name} <small>{l.experience}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <div className="results-head">
+            <h2>
+              {shown.length} {shown.length === 1 ? 'question' : 'questions'}
+              {!smart && debouncedSearch && <span className="muted"> matching “{debouncedSearch}”</span>}
+            </h2>
           </div>
-        </section>
 
-        <p className="count">
-          {shown.length} {shown.length === 1 ? 'question' : 'questions'}
-          {!smart && debouncedSearch && <> matching “{debouncedSearch}”</>}
-        </p>
-        {shown.length === 0 && (
-          <p className="empty">
-            No matches. Try different words, remove a filter, or clear the search.
-          </p>
-        )}
+          {!loaded && !smart ? (
+            <ul className="cards" aria-busy="true">{[0, 1, 2].map(i => <li key={i} className="skeleton" />)}</ul>
+          ) : shown.length === 0 ? (
+            <div className="empty-state">
+              <div className="icon"><AlertIcon /></div>
+              <h3>No matches</h3>
+              <p>Try different words or clear a filter. Press “Smart search” and I'll look online for new questions.</p>
+            </div>
+          ) : (
+            <ul className="cards">
+              {shown.map(q => (
+                <QuestionCard key={q.id} q={q} open={open.has(q.id)} onToggle={() => toggle(q.id)}
+                  bookmarked={bookmarked(q.id)} onBookmark={() => toggleBookmark(q.id)} />
+              ))}
+            </ul>
+          )}
+        </>)}
+      </main>
 
-        <ul className="cards">
-          {shown.map(q => (
-            <QuestionCard key={q.id} q={q} open={open.has(q.id)} onToggle={() => toggle(q.id)}
-              bookmarked={bookmarked(q.id)} onBookmark={() => toggleBookmark(q.id)} />
-          ))}
-        </ul>
-      </>)}
-    </main>
+      <footer className="site-footer">
+        <div className="wrap">
+          Questions are rewritten from Stack Overflow (CC BY-SA) with source links. Scores come from Claude and are guidance, not a guarantee.
+        </div>
+      </footer>
+
+      <AuthDialog open={showAuth && !email} message={authMessage} onClose={() => setShowAuth(false)} />
+    </>
   )
 }

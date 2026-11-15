@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { apiFetch } from './api'
+import { BookmarkIcon } from './Icons'
 import QuestionCard from './QuestionCard'
 import type { Question } from './types'
 
-export default function SavedView({ onRemoved }: { onRemoved: (id: number) => void }) {
+export default function SavedView({ onRemoved, onBrowse }: { onRemoved: (id: number) => void; onBrowse: () => void }) {
   const [items, setItems] = useState<Question[] | null>(null)
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
@@ -25,17 +26,27 @@ export default function SavedView({ onRemoved }: { onRemoved: (id: number) => vo
   const toggle = (id: number) =>
     setOpen(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
-  if (error) return <p className="error">{error}</p>
-  if (!items) return <p className="muted">Loading…</p>
+  if (error) return <p className="error" role="alert">{error}</p>
+  if (!items) return <ul className="cards" aria-busy="true">{[0, 1, 2].map(i => <li key={i} className="skeleton" />)}</ul>
   if (items.length === 0)
-    return <p className="empty">Nothing saved yet. Click the ☆ on any question in Browse to keep it here.</p>
+    return (
+      <div className="empty-state">
+        <div className="icon"><BookmarkIcon /></div>
+        <h3>Nothing saved yet</h3>
+        <p>Tap the star on any question to keep it here for later.</p>
+        <button className="btn btn-primary" onClick={onBrowse}>Browse questions</button>
+      </div>
+    )
 
   return (
-    <ul className="cards">
-      {items.map(q => (
-        <QuestionCard key={q.id} q={q} open={open.has(q.id)} onToggle={() => toggle(q.id)}
-          bookmarked onBookmark={() => remove(q.id)} />
-      ))}
-    </ul>
+    <>
+      <div className="results-head"><h2>{items.length} saved {items.length === 1 ? 'question' : 'questions'}</h2></div>
+      <ul className="cards">
+        {items.map(q => (
+          <QuestionCard key={q.id} q={q} open={open.has(q.id)} onToggle={() => toggle(q.id)}
+            bookmarked onBookmark={() => remove(q.id)} />
+        ))}
+      </ul>
+    </>
   )
 }

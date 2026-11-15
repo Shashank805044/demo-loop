@@ -1,5 +1,8 @@
 import { useState } from 'react'
 import { apiFetch } from './api'
+import { AlertIcon, CheckIcon, MicIcon } from './Icons'
+import ScoreRing from './ScoreRing'
+import { tone } from './tone'
 import { useAuth } from './useAuth'
 import type { LevelInfo, Topic } from './types'
 
@@ -51,7 +54,7 @@ export default function MockInterview({ api, topics, levels, onNeedLogin }: {
       const res = await fetch(`${api}/api/mock/start?${p}`)
       if (!res.ok) throw new Error()
       const qs: MockQuestion[] = await res.json()
-      if (qs.length === 0) { setError('No questions match that topic and level yet.'); return }
+      if (qs.length === 0) { setError('No questions match that topic and level yet. Try a different mix.'); return }
       setQuestions(qs); setIndex(0); setScores([]); setAnswer(''); setResult(null)
       setSessionId(crypto.randomUUID())
       setStarted(true)
@@ -99,42 +102,54 @@ export default function MockInterview({ api, topics, levels, onNeedLogin }: {
   // ---- Setup ----
   if (!started) {
     return (
-      <section className="mock">
-        <p className="sub">Answer questions in your own words. AI scores each answer and shows what you missed.</p>
-        <div className="filters">
-          <div>
-            <h2>Topic</h2>
-            <div className="chips">
-              <button className={topic === '' ? 'on' : ''} onClick={() => setTopic('')}>Any</button>
-              {topics.map(t => (
-                <button key={t.id} className={topic === t.slug ? 'on' : ''}
-                  onClick={() => setTopic(t.slug)}>{t.name}</button>
-              ))}
+      <section className="mock-setup">
+        <div>
+          <h2>Mock interview</h2>
+          <p className="muted">Answer in your own words. You'll get a score, what you got right, and what was missing.</p>
+        </div>
+        <div className="panel">
+          <div className="filters">
+            <div className="filter-row">
+              <span className="filter-label">Topic</span>
+              <div className="chips">
+                <button className="chip" aria-pressed={topic === ''} onClick={() => setTopic('')}>Any</button>
+                {topics.map(t => (
+                  <button key={t.id} className="chip" aria-pressed={topic === t.slug}
+                    onClick={() => setTopic(t.slug)}>{t.name}</button>
+                ))}
+              </div>
+            </div>
+            <div className="filter-row">
+              <span className="filter-label">Level</span>
+              <div className="chips">
+                <button className="chip" aria-pressed={level === 0} onClick={() => setLevel(0)}>Any</button>
+                {levels.map(l => (
+                  <button key={l.id} className="chip" aria-pressed={level === l.id}
+                    onClick={() => setLevel(l.id)}>{l.name} <small>{l.experience}</small></button>
+                ))}
+              </div>
+            </div>
+            <div className="filter-row">
+              <span className="filter-label">Length</span>
+              <div className="chips">
+                {[3, 5, 10].map(n => (
+                  <button key={n} className="chip" aria-pressed={count === n} onClick={() => setCount(n)}>{n} questions</button>
+                ))}
+              </div>
             </div>
           </div>
-          <div>
-            <h2>Level</h2>
-            <div className="chips">
-              <button className={level === 0 ? 'on' : ''} onClick={() => setLevel(0)}>Any</button>
-              {levels.map(l => (
-                <button key={l.id} className={level === l.id ? 'on' : ''}
-                  onClick={() => setLevel(l.id)}>{l.name} <small>{l.experience}</small></button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <h2>Questions</h2>
-            <div className="chips">
-              {[3, 5, 10].map(n => (
-                <button key={n} className={count === n ? 'on' : ''} onClick={() => setCount(n)}>{n}</button>
-              ))}
-            </div>
+          {error && <p className="error" role="alert" style={{ marginTop: 14 }}>{error}</p>}
+          <div style={{ marginTop: 22 }}>
+            <button className="btn btn-primary" disabled={busy} onClick={start}>
+              <MicIcon width={18} height={18} /> {busy ? 'Starting…' : 'Start interview'}
+            </button>
           </div>
         </div>
-        {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy} onClick={start}>
-          {busy ? 'Starting…' : 'Start interview'}
-        </button>
+        {!email && (
+          <p className="muted">
+            <button className="link" onClick={onNeedLogin}>Log in</button> first if you want your scores saved to your progress.
+          </p>
+        )}
       </section>
     )
   }
@@ -143,12 +158,14 @@ export default function MockInterview({ api, topics, levels, onNeedLogin }: {
   if (done) {
     const total = scores.reduce((a, b) => a + b, 0)
     const avg = scores.length ? total / scores.length : 0
+    const t = tone(avg)
     return (
-      <section className="mock">
-        <div className="card summary">
+      <section>
+        <div className="panel summary">
           <h2>Interview complete</h2>
-          <p className="big">{avg.toFixed(1)}<small> / 10 average</small></p>
-          <p className="sub">{scores.length} of {questions.length} questions answered</p>
+          <ScoreRing score={Math.round(avg * 10) / 10} />
+          <p className={`verdict-label ${t.cls}`}>{t.label}</p>
+          <p className="muted">{scores.length} of {questions.length} questions answered</p>
           <ul className="scorelist">
             {questions.map((q, i) => (
               <li key={q.id}>
@@ -157,53 +174,83 @@ export default function MockInterview({ api, topics, levels, onNeedLogin }: {
               </li>
             ))}
           </ul>
+          <div style={{ marginTop: 22 }}>
+            <button className="btn btn-primary" onClick={reset}>New interview</button>
+          </div>
         </div>
-        <button className="primary" onClick={reset}>New interview</button>
       </section>
     )
   }
 
   // ---- Question ----
+  const t = result ? tone(result.score) : null
   return (
-    <section className="mock">
-      <p className="count">Question {index + 1} of {questions.length}</p>
-      <div className="card">
-        <div className="meta">
-          <span className="tag">{current.topic}</span>
-          <span className={`tag lvl-${current.level.toLowerCase()}`}>{current.level}</span>
+    <section>
+      <div className="stepper">
+        <span className="count">Question {index + 1} of {questions.length}</span>
+        <div className="progressbar" role="progressbar" aria-valuemin={0} aria-valuemax={questions.length}
+          aria-valuenow={index + (result ? 1 : 0)} aria-label="Interview progress">
+          <span style={{ width: `${((index + (result ? 1 : 0)) / questions.length) * 100}%` }} />
         </div>
-        <h3>{current.question}</h3>
+        <button className="link" onClick={reset}>End</button>
+      </div>
+
+      <div className="panel">
+        <div className="qmeta">
+          <span className="tag">{current.topic}</span>
+          <span className={`badge lvl-${current.level.toLowerCase()}`}>{current.level}</span>
+        </div>
+        <h2 className="mock-q">{current.question}</h2>
 
         {!result && (
           <>
+            <label className="sr-only" htmlFor="answer">Your answer</label>
             <textarea
+              id="answer"
+              className="textarea"
               value={answer}
               maxLength={MAX_CHARS}
-              rows={7}
-              placeholder="Type your answer…"
+              placeholder="Type your answer as you would say it in an interview…"
               onChange={e => setAnswer(e.target.value)}
               disabled={busy}
             />
-            <div className="row">
-              <small className="muted">{answer.length}/{MAX_CHARS}</small>
-              <button className="primary" disabled={busy || !answer.trim()} onClick={submit}>
-                {busy ? 'Scoring…' : 'Submit answer'}
+            <div className="answer-row">
+              <small className="muted">{answer.length} / {MAX_CHARS}</small>
+              <button className="btn btn-primary" disabled={busy || !answer.trim()} onClick={submit}>
+                {busy ? <><span className="spinner" /> Scoring…</> : 'Submit answer'}
               </button>
             </div>
           </>
         )}
 
-        {result && (
-          <div className="feedback">
-            <p className="big">{result.score}<small> / 10</small></p>
-            <p>{result.verdict}</p>
-            {result.strengths.length > 0 && (
-              <><h4>What you got right</h4><ul>{result.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul></>
-            )}
-            {result.gaps.length > 0 && (
-              <><h4>What was missing</h4><ul>{result.gaps.map((s, i) => <li key={i}>{s}</li>)}</ul></>
-            )}
-            {result.tip && <p><strong>Tip:</strong> {result.tip}</p>}
+        {result && t && (
+          <div aria-live="polite">
+            <div className="scorebox">
+              <ScoreRing score={result.score} />
+              <div>
+                <p className={`verdict-label ${t.cls}`}>{t.label}</p>
+                <p>{result.verdict}</p>
+              </div>
+            </div>
+            <div className="cols">
+              {result.strengths.length > 0 && (
+                <div className="col good">
+                  <h4><CheckIcon /> What you got right</h4>
+                  <ul>{result.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+              )}
+              {result.gaps.length > 0 && (
+                <div className="col gap">
+                  <h4><AlertIcon /> What was missing</h4>
+                  <ul>{result.gaps.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                </div>
+              )}
+            </div>
+            {result.tip && <p className="tip"><strong>Tip:</strong> {result.tip}</p>}
+            <details className="ref">
+              <summary>Show the reference answer</summary>
+              <p>{result.referenceAnswer}</p>
+            </details>
             {result.saved
               ? <p className="muted">✓ Saved to your progress</p>
               : !email && (
@@ -212,18 +259,15 @@ export default function MockInterview({ api, topics, levels, onNeedLogin }: {
                   <button className="link" onClick={onNeedLogin}>Log in to keep your progress</button>
                 </p>
               )}
-            <details>
-              <summary>Reference answer</summary>
-              <p>{result.referenceAnswer}</p>
-            </details>
-            <button className="primary" onClick={next}>
-              {index + 1 >= questions.length ? 'See results' : 'Next question'}
-            </button>
+            <div style={{ marginTop: 16 }}>
+              <button className="btn btn-primary" onClick={next}>
+                {index + 1 >= questions.length ? 'See results' : 'Next question'}
+              </button>
+            </div>
           </div>
         )}
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error" role="alert" style={{ marginTop: 12 }}>{error}</p>}
       </div>
-      <button className="link" onClick={reset}>End interview</button>
     </section>
   )
 }

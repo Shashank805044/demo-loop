@@ -1,1 +1,77 @@
+@import '@fontsource-variable/inter';
+
+/* ---------- Design tokens ---------- */
+:root {
+  --font: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  --bg: #f5f6fb;
+  --surface: #ffffff;
+  --surface-2: #eff1f8;
+  --text: #141a2e;
+  --muted: #5a6479;
+  --line: #e2e6f0;
+
+  --brand: #5b5bf0;
+  --brand-strong: #4545d4;
+  --brand-soft: #ecebff;
+  --on-brand: #ffffff;
+  --ring: rgba(91, 91, 240, 0.35);
+
+  --good: #15803d;   --good-soft: #e5f7ec;
+  --warn: #b45309;   --warn-soft: #fff1d9;
+  --bad: #be123c;    --bad-soft: #ffe8ee;
+
+  --shadow-sm: 0 1px 2px rgba(20, 26, 46, 0.06);
+  --shadow-md: 0 8px 24px -8px rgba(20, 26, 46, 0.14);
+  --shadow-lg: 0 24px 60px -20px rgba(20, 26, 46, 0.3);
+  --radius: 14px;
+  --radius-sm: 10px;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0c0f1f;
+  --surface: #151a2f;
+  --surface-2: #1c2239;
+  --text: #eceffa;
+  --muted: #98a2bd;
+  --line: #29304d;
+
+  --brand: #8e8eff;
+  --brand-strong: #a9a9ff;
+  --brand-soft: #232750;
+  --on-brand: #0c0f1f;
+  --ring: rgba(142, 142, 255, 0.4);
+
+  --good: #4ade80;   --good-soft: #12301f;
+  --warn: #fbbf24;   --warn-soft: #382a0e;
+  --bad: #fb7185;    --bad-soft: #3a1522;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.8);
+  color-scheme: dark;
+}
+
+/* ---------- Base ---------- */
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { line-height: 1.2; letter-spacing: -0.015em; margin: 0; }
+p { margin: 0; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--brand-strong); }
+:focus-visible { outline: 3px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+::selection { background: var(--brand-soft); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
