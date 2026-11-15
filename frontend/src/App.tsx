@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import MockInterview from './MockInterview'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://localhost:5137'
 
@@ -24,6 +25,7 @@ export default function App() {
   const [questions, setQuestions] = useState<Question[]>([])
   const [open, setOpen] = useState<Set<number>>(new Set())
   const [error, setError] = useState('')
+  const [tab, setTab] = useState<'browse' | 'mock'>('browse')
 
   useEffect(() => {
     Promise.all([
@@ -54,9 +56,18 @@ export default function App() {
   return (
     <main>
       <h1>Interview Question Hub</h1>
-      <p className="sub">Pick a topic and your experience level.</p>
+
+      <nav className="tabs">
+        <button className={tab === 'browse' ? 'on' : ''} onClick={() => setTab('browse')}>Browse questions</button>
+        <button className={tab === 'mock' ? 'on' : ''} onClick={() => setTab('mock')}>Mock interview</button>
+      </nav>
 
       {error && <p className="error">{error}</p>}
+
+      {tab === 'mock' && <MockInterview api={API} topics={topics} levels={levels} />}
+
+      {tab === 'browse' && (<>
+      <p className="sub">Pick a topic and your experience level.</p>
 
       <section className="filters">
         <div>
@@ -112,6 +123,7 @@ export default function App() {
           </li>
         ))}
       </ul>
+      </>)}
     </main>
   )
 }

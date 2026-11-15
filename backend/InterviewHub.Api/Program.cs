@@ -1,5 +1,7 @@
 using InterviewHub.Api;
+using System.Threading.RateLimiting;
 using InterviewHub.Api.Collector;
+using InterviewHub.Api.Mock;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -27,6 +29,18 @@ builder.Services.AddSingleton<ClaudeRewriter>();
 builder.Services.AddScoped<CollectionRunner>();
 builder.Services.AddHostedService<CollectorHostedService>();
 
+builder.Services.Configure<MockOptions>(builder.Configuration.GetSection(MockOptions.Section));
+builder.Services.AddSingleton<ClaudeScorer>();
+// Scoring spends Claude credits on a public endpoint: limit requests per client IP.
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    var perMinute = builder.Configuration.GetValue("Mock:RequestsPerMinute", 20);
+    o.AddPolicy("mock", ctx => RateLimitPartition.GetFixedWindowLimiter(
+        ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = perMinute, Window = TimeSpan.FromMinutes(1) }));
+});
+
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithOrigins(builder.Configuration.GetSection("Cors:Origins").Get<string[]>()
                  ?? ["http://localhost:5173"])
@@ -42,6 +56,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseCors();
+app.UseRateLimiter();
 
 app.MapGet("/api/topics", async (AppDb db) =>
     await db.Topics.OrderBy(t => t.Name)
@@ -85,6 +100,51 @@ app.MapGet("/api/questions/random", async (AppDb db, string? topic, int? level, 
     return all.OrderBy(_ => Random.Shared.Next()).Take(count).Select(Dto);
 });
 
+// ---- Mock interview ----
+// Questions WITHOUT reference answers, so the client can't peek before answering.
+app.MapGet("/api/mock/start", async (AppDb db, string? topic, int? level, int count = 5) =>
+{
+    count = Math.Clamp(count, 1, 20);
+    var q = db.Questions.AsNoTracking().Include(x => x.Topic).AsQueryable();
+    if (!string.IsNullOrWhiteSpace(topic)) q = q.Where(x => x.Topic!.Slug == topic);
+    if (level is >= 1 and <= 3) q = q.Where(x => x.Level == (Level)level);
+    var all = await q.ToListAsync();
+    return all.OrderBy(_ => Random.Shared.Next()).Take(count).Select(x => new
+    {
+        x.Id, topic = x.Topic!.Name, level = x.Level.ToString(), question = x.Text,
+    });
+});
+
+app.MapPost("/api/mock/score", async (ScoreRequest req, AppDb db, ClaudeScorer scorer,
+    IOptions<MockOptions> opts, CancellationToken ct) =>
+{
+    var answer = (req.Answer ?? "").Trim();
+    if (answer.Length == 0) return Results.BadRequest(new { error = "Answer is empty." });
+    if (answer.Length > opts.Value.MaxAnswerChars)
+        return Results.BadRequest(new { error = $"Answer too long (max {opts.Value.MaxAnswerChars} characters)." });
+
+    var q = await db.Questions.AsNoTracking().FirstOrDefaultAsync(x => x.Id == req.QuestionId, ct);
+    if (q is null) return Results.NotFound(new { error = "Unknown question." });
+
+    if (!scorer.IsConfigured)
+        return Results.Json(new { error = "AI scoring is not available (server has no API key)." }, statusCode: 503);
+
+    Score? score;
+    try { score = await scorer.ScoreAsync(q, answer, ct); }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        app.Logger.LogError(ex, "Scoring failed");
+        return Results.Json(new { error = "Scoring failed. Try again." }, statusCode: 502);
+    }
+    if (score is null) return Results.Json(new { error = "Could not score this answer. Try again." }, statusCode: 502);
+
+    return Results.Ok(new
+    {
+        score = score.Score10, score.Verdict, score.Strengths, score.Gaps, score.Tip,
+        referenceAnswer = q.Answer, // revealed only after the candidate has answered
+    });
+}).RequireRateLimiting("mock");
+
 // Manual trigger. Each run spends Claude API credits, so it needs a configured key.
 app.MapPost("/api/admin/collect", async (HttpContext ctx, CollectionRunner runner,
     IOptions<CollectorOptions> opts, CancellationToken ct) =>
@@ -99,3 +159,5 @@ app.MapPost("/api/admin/collect", async (HttpContext ctx, CollectionRunner runne
 });
 
 app.Run();
+
+record ScoreRequest(int QuestionId, string? Answer);
