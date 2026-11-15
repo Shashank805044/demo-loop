@@ -7,3 +7,7 @@ node_modules/
 dist/
 .vs/
 *.user
+
+# Local run state and secrets: never commit
+.run/
+.env.local
