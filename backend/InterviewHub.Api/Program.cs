@@ -1,5 +1,7 @@
 using InterviewHub.Api;
+using InterviewHub.Api.Collector;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +13,19 @@ builder.Services.AddDbContext<AppDb>(o =>
     if (provider == "SqlServer") o.UseSqlServer(conn);
     else o.UseSqlite(conn);
 });
+
+builder.Services.Configure<CollectorOptions>(builder.Configuration.GetSection(CollectorOptions.Section));
+builder.Services.AddHttpClient<StackExchangeClient>(c =>
+{
+    c.DefaultRequestHeaders.UserAgent.ParseAdd("InterviewHub/1.0");
+    c.Timeout = TimeSpan.FromSeconds(30);
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate,
+});
+builder.Services.AddSingleton<ClaudeRewriter>();
+builder.Services.AddScoped<CollectionRunner>();
+builder.Services.AddHostedService<CollectorHostedService>();
 
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .WithOrigins(builder.Configuration.GetSection("Cors:Origins").Get<string[]>()
@@ -68,6 +83,19 @@ app.MapGet("/api/questions/random", async (AppDb db, string? topic, int? level, 
     count = Math.Clamp(count, 1, 50);
     var all = await Filter(db, topic, level).ToListAsync();
     return all.OrderBy(_ => Random.Shared.Next()).Take(count).Select(Dto);
+});
+
+// Manual trigger. Each run spends Claude API credits, so it needs a configured key.
+app.MapPost("/api/admin/collect", async (HttpContext ctx, CollectionRunner runner,
+    IOptions<CollectorOptions> opts, CancellationToken ct) =>
+{
+    var expected = opts.Value.AdminKey;
+    if (string.IsNullOrEmpty(expected)) return Results.NotFound(); // disabled
+    var given = ctx.Request.Headers["X-Admin-Key"].ToString();
+    var ok = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+        System.Text.Encoding.UTF8.GetBytes(given), System.Text.Encoding.UTF8.GetBytes(expected));
+    if (!ok) return Results.Unauthorized();
+    return Results.Ok(await runner.RunAsync(ct));
 });
 
 app.Run();

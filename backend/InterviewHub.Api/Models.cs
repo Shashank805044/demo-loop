@@ -22,6 +22,8 @@ public class Question
     public Level Level { get; set; }
     public string Text { get; set; } = "";
     public string Answer { get; set; } = "";
+    /// <summary>Stable id of the origin item (e.g. "so:12345") used to avoid re-importing.</summary>
+    public string? SourceId { get; set; }
     public string? SourceName { get; set; }
     public string? SourceUrl { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
