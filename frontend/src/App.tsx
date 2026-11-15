@@ -10,6 +10,7 @@ type SmartResult = {
   usedAI: boolean
   summary: string
   note?: string | null
+  fetched?: number
   questions: Question[]
 }
 type Question = {
@@ -48,8 +49,13 @@ export default function App() {
       const res = await fetch(`${API}/api/search?${new URLSearchParams({ q })}`)
       if (res.status === 429) { setSmartError('Too many searches. Wait a minute and try again.'); return }
       if (!res.ok) { setSmartError('Search failed. Try again.'); return }
-      setSmart(await res.json())
+      const data: SmartResult = await res.json()
+      setSmart(data)
       setOpen(new Set())
+      if (data.fetched && data.fetched > 0) {
+        // New questions (maybe a brand-new topic) were added: refresh the topic chips.
+        fetch(`${API}/api/topics`).then(r => r.json()).then(setTopics).catch(() => {})
+      }
     } catch {
       setSmartError('Cannot reach the API. Is the backend running?')
     } finally {
@@ -118,12 +124,17 @@ export default function App() {
           aria-label="Search questions"
         />
         <button className="primary inline" type="submit" disabled={smartBusy || !search.trim()}>
-          {smartBusy ? 'Thinking…' : '✨ Smart search'}
+          {smartBusy ? 'Searching…' : '✨ Smart search'}
         </button>
         {search && (
           <button type="button" className="link" onClick={() => { setSearch(''); leaveSmart() }}>Clear</button>
         )}
       </form>
+      {smartBusy && (
+        <p className="muted">
+          Understanding your search. If we don't have enough questions yet, I'll look online and add some. This can take up to a minute.
+        </p>
+      )}
       {smartError && <p className="error">{smartError}</p>}
       {smart && (
         <p className="interp">

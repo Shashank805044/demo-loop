@@ -33,6 +33,8 @@ builder.Services.AddHostedService<CollectorHostedService>();
 builder.Services.Configure<MockOptions>(builder.Configuration.GetSection(MockOptions.Section));
 builder.Services.AddSingleton<ClaudeScorer>();
 builder.Services.AddSingleton<ClaudeSearchPlanner>();
+builder.Services.AddSingleton<OnDemandGate>();
+builder.Services.Configure<OnDemandOptions>(builder.Configuration.GetSection(OnDemandOptions.Section));
 // Scoring spends Claude credits on a public endpoint: limit requests per client IP.
 builder.Services.AddRateLimiter(o =>
 {
@@ -119,8 +121,11 @@ app.MapGet("/api/questions/random", async (AppDb db, string? topic, int? level, 
 // ---- Smart (AI-assisted) search ----
 // "latest .net questions" -> { topic: dotnet, newest: true }. Results always come from stored
 // questions; the model only produces filters, which are validated before use.
-app.MapGet("/api/search", async (string? q, AppDb db, ClaudeSearchPlanner planner, CancellationToken ct) =>
+app.MapGet("/api/search", async (string? q, AppDb db, ClaudeSearchPlanner planner, CollectionRunner runner,
+    OnDemandGate gate, IOptions<OnDemandOptions> onDemandOpts, IOptions<CollectorOptions> collectorOpts,
+    CancellationToken ct) =>
 {
+    var od = onDemandOpts.Value;
     q = (q ?? "").Trim();
     if (q.Length == 0) return Results.BadRequest(new { error = "Enter something to search for." });
     if (q.Length > 200) q = q[..200];
@@ -141,42 +146,112 @@ app.MapGet("/api/search", async (string? q, AppDb db, ClaudeSearchPlanner planne
         return Results.Ok(new { usedAI = false, summary = $"Keyword search for “{q}”", questions = plain.Select(Dto) });
     }
 
+    // Nothing actionable understood (no topic, level, keyword or "newest"): don't return everything.
+    // Fall back to matching the typed words literally.
+    if (plan.TopicSlug is null && plan.TopicName is null && plan.Level is null
+        && plan.Keywords.Length == 0 && !plan.Newest)
+    {
+        var literal = await Filter(db, null, null, q).OrderBy(x => x.Id).ToListAsync(ct);
+        return Results.Ok(new
+        {
+            usedAI = true,
+            fetched = 0,
+            summary = $"Keyword search for “{q}”",
+            note = literal.Count == 0 ? "I couldn't tell what you're looking for. Try a technology name, like “Docker” or “Python”." : null,
+            questions = literal.Select(Dto),
+        });
+    }
+
     var keywords = string.Join(' ', plan.Keywords);
-    IQueryable<Question> Build(string? kw) => Filter(db, plan.TopicSlug, plan.Level, kw);
+
+    // A technology we don't store yet (e.g. Docker): filter by its would-be slug so we match nothing
+    // (and then fetch) instead of matching everything.
+    var effSlug = plan.TopicSlug ?? (plan.TopicName is { } tn ? Slug.From(tn) : null);
+    var displayName = topics.FirstOrDefault(t => t.Slug == effSlug).Name ?? plan.TopicName;
+
+    IQueryable<Question> Build(string? kw) => Filter(db, effSlug, plan.Level, kw);
     IOrderedQueryable<Question> Order(IQueryable<Question> s) => plan.Newest
         ? s.OrderByDescending(x => x.UpdatedAt).ThenByDescending(x => x.Id)
         : s.OrderBy(x => x.Id);
 
-    var results = await Order(Build(keywords)).ToListAsync(ct);
-    var relaxed = false;
-    // Keywords too strict: fall back to topic/level only so the user still sees something.
-    // Only when a topic or level still narrows the list; otherwise "no match" is the honest answer
-    // (e.g. "docker" must not return every .NET question).
-    if (results.Count == 0 && keywords.Length > 0 && (plan.TopicSlug is not null || plan.Level is not null))
+    async Task<(List<Question> Results, bool Relaxed)> RunQuery()
     {
-        results = await Order(Build(null)).ToListAsync(ct);
-        relaxed = results.Count > 0;
+        var res = await Order(Build(keywords)).ToListAsync(ct);
+        // Keywords too strict: fall back to topic/level only so the user still sees something.
+        // Only when a topic or level still narrows the list; otherwise "no match" is the honest answer.
+        if (res.Count == 0 && keywords.Length > 0 && (effSlug is not null || plan.Level is not null))
+        {
+            res = await Order(Build(null)).ToListAsync(ct);
+            return (res, res.Count > 0);
+        }
+        return (res, false);
     }
 
-    var topicName = topics.FirstOrDefault(t => t.Slug == plan.TopicSlug).Name;
+    var (results, relaxed) = await RunQuery();
+
+    // Too few stored questions: look on the internet, store what we find, then answer from the database.
+    var fetched = 0;
+    string? fetchNote = null;
+    if (od.Enabled && results.Count < od.MinStoredResults && effSlug is not null && displayName is not null)
+    {
+        var tags = plan.Tags is { Length: > 0 } t0 ? t0
+            : collectorOpts.Value.Topics.FirstOrDefault(t => t.Slug == effSlug)?.Tags.Take(2).ToArray() ?? [];
+        var phrase = !string.IsNullOrWhiteSpace(plan.SearchText) ? plan.SearchText
+            : keywords.Length > 0 ? keywords : "what is";
+
+        if (tags.Length > 0)
+        {
+            var allowed = gate.TryAcquire($"{effSlug}|{phrase.ToLowerInvariant()}", od);
+            if (allowed == GateResult.Allowed)
+            {
+                try
+                {
+                    fetched = await runner.CollectOnDemandAsync(effSlug, displayName, tags, phrase,
+                        od.MaxQuestionsPerSearch, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    app.Logger.LogWarning("On-demand fetch failed: {Msg}", ex.Message);
+                }
+                if (fetched > 0) (results, relaxed) = await RunQuery();
+                else fetchNote = "I looked online but found no good interview questions for this.";
+            }
+            else if (allowed == GateResult.DailyLimit)
+                fetchNote = "Online lookups have reached today's limit. Showing what's stored.";
+            // Cooldown: we already looked for this recently; just show what's stored.
+        }
+    }
+
     var parts = new List<string>();
     if (plan.Newest) parts.Add("newest first");
-    if (topicName is not null) parts.Add(topicName);
+    if (displayName is not null) parts.Add(displayName);
     if (plan.Level is { } lv) parts.Add(((Level)lv).ToString());
     if (plan.Keywords.Length > 0 && !relaxed) parts.Add("about " + string.Join(", ", plan.Keywords));
 
     string? note = null;
-    if (relaxed)
+    if (fetched > 0)
+        note = $"Found {fetched} new question{(fetched == 1 ? "" : "s")} online and added {(fetched == 1 ? "it" : "them")} to the library.";
+    else if (relaxed)
         note = $"No questions mention “{string.Join(", ", plan.Keywords)}” yet, so showing everything that matches the rest of your search.";
     else if (results.Count == 0)
-        note = "No matching questions yet. Questions on this topic may not have been collected.";
+    {
+        // Distinguish "nothing on this topic" from "nothing at this level".
+        var topicHasAny = effSlug is not null && await db.Questions.AnyAsync(x => x.Topic!.Slug == effSlug, ct);
+        note = fetchNote
+            ?? (topicHasAny && plan.Level is { } missing
+                ? $"No {(Level)missing} questions for {displayName} yet. Try another level."
+                : "No matching questions yet.");
+    }
+    else if (fetchNote is not null)
+        note = fetchNote;
 
     return Results.Ok(new
     {
         usedAI = true,
         note,
+        fetched,
         summary = parts.Count > 0 ? string.Join(" · ", parts) : "All topics",
-        interpretation = new { topic = plan.TopicSlug, level = plan.Level, keywords = plan.Keywords, newest = plan.Newest },
+        interpretation = new { topic = effSlug, level = plan.Level, keywords = plan.Keywords, newest = plan.Newest },
         relaxed,
         questions = results.Select(Dto),
     });
