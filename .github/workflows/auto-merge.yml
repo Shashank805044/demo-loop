@@ -1,0 +1,57 @@
+name: Check and merge shashank into development
+
+on:
+  push:
+    branches: [shashank]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: merge-into-development
+  cancel-in-progress: false
+
+jobs:
+  check-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # 1. Check the pushed code first. Any error stops the job here,
+      #    so development is never touched.
+      - name: Check shashank (must have 0 errors)
+        run: bash .github/scripts/check.sh
+
+      # 2. Keep exactly ONE backup: development-backup is overwritten
+      #    with the current development every run.
+      - name: Back up current development
+        id: backup
+        run: |
+          SHA=$(git rev-parse origin/development)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          git push origin "$SHA:refs/heads/development-backup" --force
+
+      # 3. Merge locally and re-check the merged result before publishing.
+      - name: Merge into development and re-check
+        run: |
+          git checkout -B development origin/development
+          git merge --no-ff origin/shashank -m "Auto-merge shashank into development"
+          bash .github/scripts/check.sh
+
+      - name: Push development
+        run: git push origin development
+
+      # 4. If anything above failed after the backup was taken,
+      #    restore development to the previous version.
+      - name: Roll back development
+        if: failure() && steps.backup.outcome == 'success'
+        run: |
+          git push origin "${{ steps.backup.outputs.sha }}:refs/heads/development" --force
+          echo "Rolled development back to ${{ steps.backup.outputs.sha }}"
