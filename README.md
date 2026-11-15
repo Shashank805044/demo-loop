@@ -1,6 +1,6 @@
 # demo-loop
 
-A demo project - SHASHANK EDIT.
+A demo project.
 
 ## Branches
 
