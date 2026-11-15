@@ -1,6 +1,6 @@
 # demo-loop
 
-A demo project - DEVELOPMENT EDIT.
+A demo project.
 
 ## Branches
 
